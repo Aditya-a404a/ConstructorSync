@@ -14,9 +14,25 @@ services:
       - ./tests:/app/tests
       - ./data:/app/data
       - ./dlq:/app/dlq
+    depends_on:
+      - constructor-mock
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  constructor-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn constructsync.mock_api:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+

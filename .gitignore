@@ -45,6 +45,7 @@ htmlcov/
 .env.*.local
 *.pem
 *.key
+*.db
 
 # ──────────────────────────────────────────────
 # Datasets (large files — download via script)
