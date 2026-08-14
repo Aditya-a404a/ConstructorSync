@@ -16,6 +16,7 @@ dependencies = [
     "bleach>=6.1.0",
     "polars>=0.20.15",
     "pydantic-settings>=2.2.1",
+    "rich>=13.7.0",
 ]
 
 [project.optional-dependencies]
