@@ -8,9 +8,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Header, HTTPException, Request, Response, BackgroundTasks
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 # Define schema and config
+
 app = FastAPI(
     title="Constructor.io API Mock Server",
     description="High-fidelity mock of Constructor's Catalog Ingestion API with rate-limiting, size constraints, and chaos mode.",
@@ -210,14 +211,49 @@ async def health():
 @app.post("/v2/items")
 @app.put("/v2/items")
 async def ingest_items(
-    payload: IngestionPayload,
+    request: Request,
     background_tasks: BackgroundTasks,
     authorization: Optional[str] = Header(None)
 ):
     # 1. Authenticate
     authenticate(authorization)
 
-    items = payload.items
+    body_bytes = await request.body()
+    content_type = request.headers.get("content-type", "")
+
+    items: List[ItemModel] = []
+
+    # Check if NDJSON/JSONL
+    if "application/x-ndjson" in content_type or "application/jsonl" in content_type:
+        try:
+            lines = body_bytes.decode("utf-8").splitlines()
+            for line_num, line in enumerate(lines, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item_dict = json.loads(line)
+                    items.append(ItemModel(**item_dict))
+                except (json.JSONDecodeError, ValidationError) as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Line {line_num} has invalid schema/JSON: {str(e)}"
+                    )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSONL format: {str(e)}")
+    else:
+        # Default to standard JSON
+        try:
+            body_str = body_bytes.decode("utf-8")
+            payload_dict = json.loads(body_str)
+            payload = IngestionPayload(**payload_dict)
+            items = payload.items
+        except (json.JSONDecodeError, ValidationError) as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid payload format: {str(e)}")
 
     # 2. Batch size check (Max 1,000 items)
     if len(items) > 1000:

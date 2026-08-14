@@ -166,3 +166,29 @@ def test_chaos_mode_error():
     payload = {"items": [{"id": "item-new", "name": "New Item"}]}
     response = client.post("/v2/items", json=payload, headers=headers)
     assert response.status_code == 500
+
+def test_jsonl_ingestion():
+    jsonl_data = (
+        '{"id": "jsonl-1", "name": "Item One", "data": {"price": 10.0}}\n'
+        '{"id": "jsonl-2", "name": "Item Two", "data": {"price": 20.0}}\n'
+    )
+    headers = {
+        "Authorization": "Bearer test_key",
+        "Content-Type": "application/x-ndjson"
+    }
+    response = client.post("/v2/items", content=jsonl_data, headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert "task_id" in data
+    
+def test_jsonl_invalid_schema():
+    # Missing name
+    jsonl_data = '{"id": "jsonl-1", "data": {"price": 10.0}}\n'
+    headers = {
+        "Authorization": "Bearer test_key",
+        "Content-Type": "application/jsonl"
+    }
+    response = client.post("/v2/items", content=jsonl_data, headers=headers)
+    assert response.status_code == 400
+    assert "invalid schema/JSON" in response.json()["detail"]
+
