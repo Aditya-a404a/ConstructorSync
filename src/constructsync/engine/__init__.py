@@ -12,6 +12,7 @@ from constructsync.engine.engine import IngestionEngine
 from constructsync.engine.models import BatchResult, IngestionStats, PipelineStage
 from constructsync.engine.reader import CatalogReader
 from constructsync.engine.sanitizer import SanitizerStage
+from constructsync.engine.scorer import HealthScorer
 
 __all__ = [
     "CatalogReader",
@@ -19,6 +20,7 @@ __all__ = [
     "ConcurrencyController",
     "DeadLetterQueue",
     "DummyJSONReader",
+    "HealthScorer",
     "IngestionEngine",
     "BatchResult",
     "IngestionStats",

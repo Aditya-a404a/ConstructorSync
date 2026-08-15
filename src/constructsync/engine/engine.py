@@ -165,6 +165,7 @@ class IngestionEngine:
         source: str = "file",
         category: str | None = None,
         limit: int | None = None,
+        health_threshold: int | None = None,
         settings: ConstructSyncSettings | None = None,
         batch_size: int | None = None,
         concurrency: int | None = None,
@@ -177,6 +178,7 @@ class IngestionEngine:
         self.source = source.lower()
         self.category = category
         self.limit = limit or 5000
+        self.health_threshold = health_threshold or self.settings.health_threshold
         self.batch_size = batch_size or self.settings.default_batch_size
         self.concurrency = concurrency or self.settings.initial_concurrency
         self.base_url = base_url or self.settings.constructor_base_url
@@ -296,17 +298,23 @@ class IngestionEngine:
             await producer
             await asyncio.gather(*workers, return_exceptions=True)
 
-        # Retrieve SanitizerStage stats if present
+        # Retrieve SanitizerStage and HealthScorer stats if present
         sanitizer_stats = None
+        health_scorer_stats = None
+        health_scores = []
         for stage in self.pipeline_stages:
             if hasattr(stage, "stats") and isinstance(stage.stats, dict) and "items_sanitized" in stage.stats:
                 sanitizer_stats = stage.stats
-                break
+            elif hasattr(stage, "get_stats") and callable(stage.get_stats):
+                health_scorer_stats = stage.get_stats()
+                health_scores = getattr(stage, "scores", [])
 
         # Generate final report
         report_dict = SyncReportGenerator.generate_report_dict(
             stats=self.stats,
             sanitizer_stats=sanitizer_stats,
+            health_scorer_stats=health_scorer_stats,
+            health_scores=health_scores,
             peak_concurrency=self.peak_concurrency,
         )
         report_file = SyncReportGenerator.write_json_report(report_dict)
