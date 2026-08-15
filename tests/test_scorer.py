@@ -5,6 +5,8 @@ Unit and integration tests for the Catalog Health Scoring Engine.
 from __future__ import annotations
 
 import pytest
+from unittest.mock import patch, MagicMock
+
 from constructsync.engine.scorer import HealthScorer
 
 
@@ -201,3 +203,90 @@ def test_bonuses():
     # Bonuses: +2 (len > 200), +5 (images), +3 (metadata) = +10
     # Total: 85 + 10 = 95
     assert scorer.calculate_score(item_with_bonuses_visible) == 95
+
+
+@pytest.mark.asyncio
+async def test_health_scorer_engine_integration(tmp_path: Path):
+    """Verify that IngestionEngine runs items through HealthScorer and records stats."""
+    import csv
+    from constructsync.engine.engine import IngestionEngine
+    from constructsync.settings import ConstructSyncSettings
+    from unittest.mock import patch
+    
+    # 1. Create a dummy CSV with 2 items
+    csv_file = tmp_path / "oats.csv"
+    fieldnames = ["sku", "name", "price", "description", "image_url", "category", "brand"]
+    with open(csv_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        # Item 1: Perfect metadata (except missing secondary color/size/material -> score 97)
+        writer.writerow({
+            "sku": "SKU-PERFECT",
+            "name": "Oatmeal",
+            "price": "5.00",
+            "description": "Very long description that exceeds 50 characters to prevent short description deduction.",
+            "image_url": "http://img.png",
+            "category": "Food",
+            "brand": "OatsCorp",
+        })
+        # Item 2: Missing price (-40), missing brand (-5) -> score 100 - 40 - 5 - 3 = 52
+        writer.writerow({
+            "sku": "SKU-SPARSE",
+            "name": "Sparse Oats",
+            "price": "",
+            "description": "Very long description that exceeds 50 characters to prevent short description deduction.",
+            "image_url": "http://img.png",
+            "category": "Food",
+            "brand": "",
+        })
+
+    settings = ConstructSyncSettings(
+        constructor_api_key="key",
+        constructor_base_url="http://localhost:9999",
+        dlq_database_path=str(tmp_path / "dlq.db"),
+    )
+    
+    health_scorer = HealthScorer(threshold=75)
+    
+    engine = IngestionEngine(
+        file_path=csv_file,
+        settings=settings,
+        health_threshold=75,
+        batch_size=10,
+        concurrency=1,
+        pipeline_stages=[health_scorer],
+    )
+
+    # Mock client sending to always return success
+    mock_send = patch("constructsync.engine.client.ConstructorClient.send_batch", return_value=MagicMock(success=True, status_code=200, item_count=2))
+    
+    with mock_send:
+        stats = await engine.run()
+
+    # Verify scores are recorded
+    assert len(health_scorer.scores) == 2
+    # Perfect item has score 97 (100 - 3 for missing secondary attributes + 3 for metadata bonus = 100? No, let's calculate:
+    # Base 100
+    # price, desc, img, category, brand present -> no deductions.
+    # missing secondary attributes -> -3.
+    # structured metadata: it fallback to data which has 4 keys -> +3 bonus.
+    # Total: 100 - 3 + 3 = 100.
+    # Sparse item:
+    # Base 100
+    # missing price -> -40
+    # missing brand -> -5
+    # missing secondary attributes -> -3
+    # metadata bonus: data has 2 keys (category, description) -> +3 bonus.
+    # Total: 100 - 40 - 5 - 3 + 3 = 55.
+    
+    scores = health_scorer.scores
+    assert 100 in scores
+    assert 55 in scores
+
+    # Verify stats
+    scorer_stats = health_scorer.get_stats()
+    assert scorer_stats["total_scored"] == 2
+    assert scorer_stats["min_score"] == 55
+    assert scorer_stats["max_score"] == 100
+    assert scorer_stats["items_below_threshold"] == 1  # 55 is below threshold 75
+
