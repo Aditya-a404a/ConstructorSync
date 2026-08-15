@@ -23,6 +23,7 @@ from rich.table import Table
 from rich.text import Text
 
 from constructsync.engine.client import ConstructorClient
+from constructsync.engine.controller import ConcurrencyController
 from constructsync.engine.models import BatchResult, IngestionStats, PipelineStage
 from constructsync.engine.reader import CatalogReader
 from constructsync.settings import ConstructSyncSettings, get_settings
@@ -174,12 +175,15 @@ class IngestionEngine:
         self.api_key = api_key or self.settings.constructor_api_key
         self.pipeline_stages = pipeline_stages or []
 
+        self.min_concurrency = self.settings.min_concurrency
+        self.max_concurrency = self.settings.max_concurrency
+
         self.stats = IngestionStats()
         self._shutdown = False
-        # Queue and Semaphore are created in run() to avoid
+        # Queue and ConcurrencyController are created in run() to avoid
         # Python 3.9 "attached to a different loop" errors.
         self._queue: asyncio.Queue[list[dict] | None] | None = None
-        self._semaphore: asyncio.Semaphore | None = None
+        self.concurrency_controller: ConcurrencyController | None = None
 
     async def run(self) -> IngestionStats:
         """
@@ -193,7 +197,11 @@ class IngestionEngine:
 
         # Create asyncio primitives in the running loop (Python 3.9 compat)
         self._queue = asyncio.Queue(maxsize=self.concurrency * 2)
-        self._semaphore = asyncio.Semaphore(self.concurrency)
+        self.concurrency_controller = ConcurrencyController(
+            initial_concurrency=self.concurrency,
+            min_concurrency=self.min_concurrency,
+            max_concurrency=self.max_concurrency,
+        )
 
         # Count total rows for progress tracking
         console.print(
@@ -238,7 +246,7 @@ class IngestionEngine:
 
             # Live progress display
             with Live(
-                _build_progress_table(self.stats, self.concurrency),
+                _build_progress_table(self.stats, self.concurrency_controller.current_concurrency),
                 console=console,
                 refresh_per_second=4,
                 transient=False,
@@ -246,13 +254,13 @@ class IngestionEngine:
                 # Update progress table while workers are running
                 while not producer.done() or not all(w.done() for w in workers):
                     live.update(
-                        _build_progress_table(self.stats, self.concurrency)
+                        _build_progress_table(self.stats, self.concurrency_controller.current_concurrency)
                     )
                     await asyncio.sleep(0.25)
 
                 # Final update
                 live.update(
-                    _build_progress_table(self.stats, self.concurrency)
+                    _build_progress_table(self.stats, self.concurrency_controller.current_concurrency)
                 )
 
             # Collect any exceptions
@@ -292,7 +300,7 @@ class IngestionEngine:
                 return
 
             try:
-                async with self._semaphore:
+                async with self.concurrency_controller:
                     await self._process_and_send(client, batch, worker_id)
             except Exception as e:
                 logger.error("Worker %d unhandled error: %s", worker_id, e)
@@ -324,6 +332,9 @@ class IngestionEngine:
             self.stats.api_calls += 1
             self.stats.record_status_code(result.status_code)
 
+            # Register result with ConcurrencyController
+            await self.concurrency_controller.register_result(result.success, result.status_code)
+
             if result.success:
                 self.stats.items_sent += result.item_count
                 self.stats.batches_sent += 1
@@ -332,9 +343,14 @@ class IngestionEngine:
             # Retry on server errors (5xx) and rate limits (429)
             if result.status_code in (429, 500, 502, 503, 504) and attempt < self.MAX_RETRIES:
                 delay = self.RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                # Extra backoff on 429
+                import random
+                
+                # Extra backoff with jitter on 429
                 if result.status_code == 429:
-                    delay *= 2
+                    delay = delay * 2 * random.uniform(0.5, 1.5)
+                else:
+                    delay = delay * random.uniform(0.8, 1.2)
+                    
                 logger.warning(
                     "Worker %d: %d on attempt %d/%d — retrying in %.1fs",
                     worker_id,
