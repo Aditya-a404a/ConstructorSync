@@ -27,9 +27,9 @@ class SyncReportGenerator:
     def generate_report_dict(
         stats: IngestionStats,
         sanitizer_stats: dict | None,
-        health_scorer_stats: dict | None,
-        health_scores: list[int] | None,
         peak_concurrency: int,
+        health_scorer_stats: dict | None = None,
+        health_scores: list[int] | None = None,
     ) -> dict:
         """Construct a structured report dictionary containing all sync metrics."""
         summary = {
