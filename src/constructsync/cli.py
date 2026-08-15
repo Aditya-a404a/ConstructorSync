@@ -37,6 +37,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
     from constructsync.engine.engine import IngestionEngine
     from constructsync.engine.sanitizer import SanitizerStage
+    from constructsync.engine.scorer import HealthScorer
     from constructsync.settings import get_settings
 
     settings = get_settings()
@@ -48,6 +49,9 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         url_fields=settings.sanitize_url_fields,
     )
 
+    health_threshold = getattr(args, "health_threshold", None) or settings.health_threshold
+    health_scorer = HealthScorer(threshold=health_threshold)
+
     # Determine base-url based on target argument
     base_url = args.base_url
     if getattr(args, "target", None) == "constructor-mock":
@@ -58,12 +62,13 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         source=source,
         category=getattr(args, "category", None),
         limit=getattr(args, "limit", 5000),
+        health_threshold=health_threshold,
         settings=settings,
         batch_size=args.batch_size,
         concurrency=args.concurrency,
         base_url=base_url or settings.constructor_base_url,
         api_key=args.api_key or settings.constructor_api_key,
-        pipeline_stages=[sanitizer],
+        pipeline_stages=[sanitizer, health_scorer],
     )
 
     stats = asyncio.run(engine.run())
@@ -189,6 +194,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Inbound Target (e.g. 'constructor-mock')",
+    )
+    ingest_parser.add_argument(
+        "--health-threshold",
+        type=int,
+        default=None,
+        help="Searchability rating threshold (default: from settings, typically 70)",
     )
     ingest_parser.add_argument(
         "--batch-size", "-b",
