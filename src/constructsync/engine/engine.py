@@ -282,6 +282,9 @@ class IngestionEngine:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self._signal_shutdown)
 
+        # Write initial metrics
+        self._write_metrics_json()
+
         async with ConstructorClient(
             base_url=self.base_url,
             api_key=self.api_key,
@@ -318,6 +321,7 @@ class IngestionEngine:
                     live.update(
                         _build_progress_table(self.stats, cc)
                     )
+                    self._write_metrics_json()
                     await asyncio.sleep(0.25)
 
                 # Final update
@@ -327,6 +331,7 @@ class IngestionEngine:
                 live.update(
                     _build_progress_table(self.stats, cc)
                 )
+                self._write_metrics_json()
 
             # Collect any exceptions
             await producer
@@ -415,6 +420,7 @@ class IngestionEngine:
                     "Worker %d: all items in batch skipped (already synced)", worker_id
                 )
                 self.stats.batches_sent += 1
+                self._write_metrics_json()
                 return
 
         # Send with retries
@@ -422,6 +428,8 @@ class IngestionEngine:
             result = await client.send_batch(processed)
             self.stats.api_calls += 1
             self.stats.record_status_code(result.status_code)
+            if hasattr(result, "latency_ms") and result.latency_ms is not None:
+                self.stats.latencies.append(result.latency_ms / 1000.0)
 
             # Register result with ConcurrencyController
             await self.concurrency_controller.register_result(result.success, result.status_code)
@@ -431,6 +439,7 @@ class IngestionEngine:
                 self.stats.batches_sent += 1
                 # Commit hashes for successfully sent items
                 self.hash_filter.commit_hashes([item.get("id") or item.get("sku") for item in processed])
+                self._write_metrics_json()
                 return
 
             # Retry on server errors (5xx) and rate limits (429)
@@ -469,6 +478,7 @@ class IngestionEngine:
         )
         self.stats.items_failed += result.item_count
         self.stats.batches_failed += 1
+        self._write_metrics_json()
 
         # Save failed batch items into Dead-Letter Queue
         self.dlq.insert_failed_items(
@@ -623,3 +633,44 @@ class IngestionEngine:
         if not self._shutdown:
             logger.info("Shutdown signal received — draining queue...")
             self._shutdown = True
+
+    def _write_metrics_json(self) -> None:
+        """Write current stats to a shared JSON file for Prometheus observability."""
+        import json
+        import os
+        metrics_file = Path("data/metrics.json")
+        os.makedirs(metrics_file.parent, exist_ok=True)
+
+        items_sanitized = 0
+        for stage in self.pipeline_stages:
+            if hasattr(stage, "stats") and isinstance(stage.stats, dict) and "items_sanitized" in stage.stats:
+                items_sanitized = stage.stats["items_sanitized"]
+
+        health_scores = []
+        for stage in self.pipeline_stages:
+            if hasattr(stage, "scores") and isinstance(stage.scores, list):
+                health_scores = stage.scores
+
+        data = {
+            "timestamp": time.time(),
+            "items_processed": {
+                "success": self.stats.items_sent,
+                "failed": self.stats.items_failed,
+                "skipped": self.stats.items_skipped,
+            },
+            "items_sanitized": items_sanitized,
+            "api_requests": {str(code): count for code, count in self.stats.status_codes.items()},
+            "api_request_durations": getattr(self.stats, "latencies", []),
+            "batch_size": self.batch_size,
+            "current_concurrency": self.concurrency_controller.current_concurrency,
+            "health_scores": health_scores,
+        }
+
+        # Write atomically using a temp file to prevent concurrent read mangling
+        temp_file = metrics_file.with_suffix(".tmp")
+        try:
+            with open(temp_file, "w") as f:
+                json.dump(data, f)
+            os.replace(temp_file, metrics_file)
+        except Exception as e:
+            logger.warning("Failed to write live metrics file: %s", e)
