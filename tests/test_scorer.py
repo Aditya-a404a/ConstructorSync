@@ -5,6 +5,7 @@ Unit and integration tests for the Catalog Health Scoring Engine.
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from constructsync.engine.scorer import HealthScorer
