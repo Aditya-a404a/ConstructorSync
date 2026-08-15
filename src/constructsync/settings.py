@@ -43,6 +43,9 @@ class ConstructSyncSettings(BaseSettings):
     dlq_database_path: str = "dlq/dlq.db"
     hash_store_database_path: str = "data/hashes.db"
 
+    # ── Health Scoring ─────────────────────────────────────────────────
+    health_threshold: int = 70
+
 
 @lru_cache
 def get_settings() -> ConstructSyncSettings:
