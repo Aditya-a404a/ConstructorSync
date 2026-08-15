@@ -181,8 +181,10 @@ class IngestionEngine:
         base_url: str | None = None,
         api_key: str | None = None,
         pipeline_stages: list[PipelineStage] | None = None,
+        show_progress: bool = True,
     ) -> None:
         self.settings = settings or get_settings()
+        self.show_progress = show_progress
         self.file_path = Path(file_path) if file_path is not None else None
         self.source = source.lower()
         self.category = category
@@ -258,22 +260,24 @@ class IngestionEngine:
             self.stats.batches_total = 0
         else:
             target_name = self.file_path.name if self.file_path else f"Live API ({self.source})"
-            console.print(
-                f"[dim]Counting rows in {target_name}...[/dim]"
-            )
+            if self.show_progress:
+                console.print(
+                    f"[dim]Counting rows in {target_name}...[/dim]"
+                )
             total_rows = reader.count_rows()
             self.stats.total_items = total_rows
             self.stats.batches_total = (total_rows + self.batch_size - 1) // self.batch_size
 
-        console.print(
-            f"[bold]Starting ingestion:[/bold] "
-            f"{total_rows:,} items → {self.stats.batches_total:,} batches "
-            f"(batch_size={self.batch_size}, concurrency={self.concurrency})"
-        )
-        console.print(
-            f"[dim]Target: {self.base_url}/v2/items[/dim]"
-        )
-        console.print()
+        if self.show_progress:
+            console.print(
+                f"[bold]Starting ingestion:[/bold] "
+                f"{total_rows:,} items → {self.stats.batches_total:,} batches "
+                f"(batch_size={self.batch_size}, concurrency={self.concurrency})"
+            )
+            console.print(
+                f"[dim]Target: {self.base_url}/v2/items[/dim]"
+            )
+            console.print()
 
         self.stats.start_time = time.monotonic()
 
@@ -306,15 +310,26 @@ class IngestionEngine:
                 for i in range(self.concurrency)
             ]
 
-            # Live progress display
-            with Live(
-                _build_progress_table(self.stats, self.concurrency_controller.current_concurrency),
-                console=console,
-                refresh_per_second=4,
-                transient=False,
-            ) as live:
-                # Update progress table while workers are running
-                while not producer.done() or not all(w.done() for w in workers):
+            if self.show_progress:
+                # Live progress display
+                with Live(
+                    _build_progress_table(self.stats, self.concurrency_controller.current_concurrency),
+                    console=console,
+                    refresh_per_second=4,
+                    transient=False,
+                ) as live:
+                    # Update progress table while workers are running
+                    while not producer.done() or not all(w.done() for w in workers):
+                        cc = self.concurrency_controller.current_concurrency
+                        self.peak_concurrency = max(self.peak_concurrency, cc)
+                        self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
+                        live.update(
+                            _build_progress_table(self.stats, cc)
+                        )
+                        self._write_metrics_json()
+                        await asyncio.sleep(0.25)
+
+                    # Final update
                     cc = self.concurrency_controller.current_concurrency
                     self.peak_concurrency = max(self.peak_concurrency, cc)
                     self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
@@ -322,15 +337,17 @@ class IngestionEngine:
                         _build_progress_table(self.stats, cc)
                     )
                     self._write_metrics_json()
+            else:
+                while not producer.done() or not all(w.done() for w in workers):
+                    cc = self.concurrency_controller.current_concurrency
+                    self.peak_concurrency = max(self.peak_concurrency, cc)
+                    self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
+                    self._write_metrics_json()
                     await asyncio.sleep(0.25)
-
                 # Final update
                 cc = self.concurrency_controller.current_concurrency
                 self.peak_concurrency = max(self.peak_concurrency, cc)
                 self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
-                live.update(
-                    _build_progress_table(self.stats, cc)
-                )
                 self._write_metrics_json()
 
             # Collect any exceptions
@@ -359,10 +376,11 @@ class IngestionEngine:
             peak_concurrency=self.peak_concurrency,
         )
         report_file = SyncReportGenerator.write_json_report(report_dict)
-        console.print(f"[dim]Sync report written to {report_file}[/dim]")
+        if self.show_progress:
+            console.print(f"[dim]Sync report written to {report_file}[/dim]")
 
-        # Print report in console
-        SyncReportGenerator.print_console_report(report_dict, console=console)
+            # Print report in console
+            SyncReportGenerator.print_console_report(report_dict, console=console)
 
         return self.stats
 

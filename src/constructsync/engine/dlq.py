@@ -87,6 +87,10 @@ class DeadLetterQueue:
                 )
             conn.commit()
 
+    def list_failed_items(self) -> list[dict[str, Any]]:
+        """Retrieve all failed items in the DLQ (backwards compatibility helper)."""
+        return self.list_items(limit=100000)
+
     def list_items(
         self,
         reason: str | None = None,
