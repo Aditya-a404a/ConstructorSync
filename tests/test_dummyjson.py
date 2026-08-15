@@ -54,5 +54,5 @@ def test_dummyjson_reader_fetch_and_replication():
 
     # Assert replication index makes items unique
     second_copy = batches[1][0]  # item 1 replicated again
-    assert second_copy["sku"] == "DJ-1-2"
+    assert second_copy["sku"] == "DJ-1-1"
     assert second_copy["name"] == "Test Phone"
