@@ -17,6 +17,7 @@ dependencies = [
     "polars>=0.20.15",
     "pydantic-settings>=2.2.1",
     "rich>=13.7.0",
+    "aiokafka>=0.10.0",
 ]
 
 [project.optional-dependencies]
