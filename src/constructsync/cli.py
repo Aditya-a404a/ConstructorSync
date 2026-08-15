@@ -63,6 +63,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         category=getattr(args, "category", None),
         limit=getattr(args, "limit", 5000),
         health_threshold=health_threshold,
+        force_sync=getattr(args, "force", False),
         settings=settings,
         batch_size=args.batch_size,
         concurrency=args.concurrency,
@@ -200,6 +201,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Searchability rating threshold (default: from settings, typically 70)",
+    )
+    ingest_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force sync by bypassing content hash checks",
     )
     ingest_parser.add_argument(
         "--batch-size", "-b",
