@@ -389,6 +389,20 @@ class IngestionEngine:
         summary.add_row("API Calls", f"{self.stats.api_calls:,}")
         summary.add_row("Retries", f"{self.stats.retries:,}")
 
+        # Check for SanitizerStage statistics
+        sanitizer_stats = None
+        for stage in self.pipeline_stages:
+            if hasattr(stage, "stats") and isinstance(stage.stats, dict) and "items_sanitized" in stage.stats:
+                sanitizer_stats = stage.stats
+                break
+
+        if sanitizer_stats:
+            summary.add_row("Items Sanitized", f"[yellow]{sanitizer_stats['items_sanitized']:,}[/yellow]")
+            summary.add_row("Validation Failures", f"[red]{sanitizer_stats['items_failed_validation']:,}[/red]")
+            summary.add_row("Tags Stripped", f"{sanitizer_stats['tags_stripped']:,}")
+            summary.add_row("Entities Encoded", f"{sanitizer_stats['entities_encoded']:,}")
+            summary.add_row("Double Entities Norm", f"{sanitizer_stats['double_encoded_normalized']:,}")
+
         if self.stats.status_codes:
             codes_str = ", ".join(
                 f"{code}: {count}" for code, count in sorted(self.stats.status_codes.items())

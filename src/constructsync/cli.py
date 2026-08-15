@@ -30,9 +30,17 @@ def _setup_logging(debug: bool = False) -> None:
 def cmd_ingest(args: argparse.Namespace) -> None:
     """Execute the ingestion command."""
     from constructsync.engine.engine import IngestionEngine
+    from constructsync.engine.sanitizer import SanitizerStage
     from constructsync.settings import get_settings
 
     settings = get_settings()
+
+    sanitizer = SanitizerStage(
+        text_fields=settings.sanitize_text_fields,
+        id_fields=settings.sanitize_id_fields,
+        numeric_fields=settings.sanitize_numeric_fields,
+        url_fields=settings.sanitize_url_fields,
+    )
 
     engine = IngestionEngine(
         file_path=args.file,
@@ -41,6 +49,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         concurrency=args.concurrency,
         base_url=args.base_url or settings.constructor_base_url,
         api_key=args.api_key or settings.constructor_api_key,
+        pipeline_stages=[sanitizer],
     )
 
     stats = asyncio.run(engine.run())

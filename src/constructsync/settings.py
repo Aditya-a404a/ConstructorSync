@@ -33,6 +33,12 @@ class ConstructSyncSettings(BaseSettings):
     max_concurrency: int = 32
     min_concurrency: int = 1
 
+    # ── Sanitization Settings ──────────────────────────────────────────
+    sanitize_text_fields: list[str] = ["description", "features", "about_product"]
+    sanitize_id_fields: list[str] = ["sku", "item_id", "group_id", "id"]
+    sanitize_numeric_fields: list[str] = ["price", "rating", "review_count"]
+    sanitize_url_fields: list[str] = ["image_url", "product_url", "url"]
+
     # ── Storage ────────────────────────────────────────────────────────
     dlq_database_path: str = "dlq/dlq.db"
     hash_store_database_path: str = "data/hashes.db"
