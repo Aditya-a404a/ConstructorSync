@@ -25,6 +25,8 @@ from rich.text import Text
 from constructsync.engine.client import ConstructorClient
 from constructsync.engine.controller import ConcurrencyController
 from constructsync.engine.dlq import DeadLetterQueue
+from constructsync.engine.hash_filter import HashFilterStage
+from constructsync.engine.hash_store import HashStore
 from constructsync.engine.models import BatchResult, IngestionStats, PipelineStage
 from constructsync.engine.reader import CatalogReader
 from constructsync.engine.report import SyncReportGenerator
@@ -106,10 +108,13 @@ def _build_progress_table(stats: IngestionStats, concurrency: int) -> Table:
     table.add_row("Elapsed", f"{minutes:02d}:{seconds:02d}")
     table.add_row("", "")  # spacer
 
-    # Items
     table.add_row(
         "Items Sent",
         Text(f"{stats.items_sent:,}", style="green"),
+    )
+    table.add_row(
+        "Items Skipped",
+        Text(f"{stats.items_skipped:,}", style="cyan" if stats.items_skipped > 0 else "dim"),
     )
     table.add_row(
         "Items Failed",
@@ -166,6 +171,7 @@ class IngestionEngine:
         category: str | None = None,
         limit: int | None = None,
         health_threshold: int | None = None,
+        force_sync: bool = False,
         settings: ConstructSyncSettings | None = None,
         batch_size: int | None = None,
         concurrency: int | None = None,
@@ -179,6 +185,7 @@ class IngestionEngine:
         self.category = category
         self.limit = limit or 5000
         self.health_threshold = health_threshold or self.settings.health_threshold
+        self.force_sync = force_sync
         self.batch_size = batch_size or self.settings.default_batch_size
         self.concurrency = concurrency or self.settings.initial_concurrency
         self.base_url = base_url or self.settings.constructor_base_url
@@ -227,6 +234,13 @@ class IngestionEngine:
             max_concurrency=self.max_concurrency,
         )
         self.dlq = DeadLetterQueue(self.settings.dlq_database_path)
+        
+        # Initialize HashStore and HashFilterStage
+        self.hash_store = HashStore(self.settings.hash_store_database_path)
+        self.hash_filter = HashFilterStage(hash_store=self.hash_store, force_sync=self.force_sync)
+        if not any(isinstance(s, HashFilterStage) for s in self.pipeline_stages):
+            self.pipeline_stages.append(self.hash_filter)
+
         self.peak_concurrency = self.concurrency
 
         # Count total rows for progress tracking
@@ -282,6 +296,7 @@ class IngestionEngine:
                 while not producer.done() or not all(w.done() for w in workers):
                     cc = self.concurrency_controller.current_concurrency
                     self.peak_concurrency = max(self.peak_concurrency, cc)
+                    self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
                     live.update(
                         _build_progress_table(self.stats, cc)
                     )
@@ -290,6 +305,7 @@ class IngestionEngine:
                 # Final update
                 cc = self.concurrency_controller.current_concurrency
                 self.peak_concurrency = max(self.peak_concurrency, cc)
+                self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
                 live.update(
                     _build_progress_table(self.stats, cc)
                 )
@@ -308,6 +324,8 @@ class IngestionEngine:
             elif hasattr(stage, "get_stats") and callable(stage.get_stats):
                 health_scorer_stats = stage.get_stats()
                 health_scores = getattr(stage, "scores", [])
+
+        self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
 
         # Generate final report
         report_dict = SyncReportGenerator.generate_report_dict(
@@ -375,9 +393,10 @@ class IngestionEngine:
         for stage in self.pipeline_stages:
             processed = await stage.process(processed)
             if not processed:
-                logger.warning(
-                    "Worker %d: pipeline stage filtered out entire batch", worker_id
+                logger.info(
+                    "Worker %d: all items in batch skipped (already synced)", worker_id
                 )
+                self.stats.batches_sent += 1
                 return
 
         # Send with retries
@@ -392,6 +411,8 @@ class IngestionEngine:
             if result.success:
                 self.stats.items_sent += result.item_count
                 self.stats.batches_sent += 1
+                # Commit hashes for successfully sent items
+                self.hash_filter.commit_hashes([item.get("id") or item.get("sku") for item in processed])
                 return
 
             # Retry on server errors (5xx) and rate limits (429)
