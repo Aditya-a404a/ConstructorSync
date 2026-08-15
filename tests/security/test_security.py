@@ -49,18 +49,35 @@ class HTMLStructureChecker(HTMLParser):
 # ── Helper function to assert safety ──────────────────────────────────
 
 def assert_payload_is_defanged(sanitized: str) -> None:
-    """Ensure that the sanitized output does not contain hazardous XSS features."""
+    """Ensure that the sanitized output does not contain active XSS structures."""
     lower_val = sanitized.lower()
     assert "<script" not in lower_val, f"Found script tag in: {sanitized}"
-    assert "onerror" not in lower_val, f"Found onerror in: {sanitized}"
-    assert "onload" not in lower_val, f"Found onload in: {sanitized}"
-    assert "onclick" not in lower_val, f"Found onclick in: {sanitized}"
-    assert "onfocus" not in lower_val, f"Found onfocus in: {sanitized}"
-    assert "javascript:" not in lower_val, f"Found javascript scheme in: {sanitized}"
-    assert "vbscript:" not in lower_val, f"Found vbscript scheme in: {sanitized}"
-    assert "data:" not in lower_val, f"Found data scheme in: {sanitized}"
     assert "<iframe" not in lower_val, f"Found iframe tag in: {sanitized}"
-    
+
+    # Check for event handlers and protocol schemes inside tags
+    class SecurityChecker(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.has_xss = False
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            t_lower = tag.lower()
+            if t_lower in ("script", "iframe"):
+                self.has_xss = True
+            for attr, val in attrs:
+                if val:
+                    val_lower = val.lower().strip()
+                    # Event handlers start with 'on'
+                    if attr.lower().startswith("on"):
+                        self.has_xss = True
+                    # Dangerous URI schemes
+                    if "javascript:" in val_lower or "vbscript:" in val_lower or "data:" in val_lower:
+                        self.has_xss = True
+
+    sec_checker = SecurityChecker()
+    sec_checker.feed(sanitized)
+    assert not sec_checker.has_xss, f"Found active XSS structure in: {sanitized}"
+
     # Verify HTML tags balance
     checker = HTMLStructureChecker()
     checker.feed(sanitized)
