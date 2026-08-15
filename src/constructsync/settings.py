@@ -46,6 +46,11 @@ class ConstructSyncSettings(BaseSettings):
     # ── Health Scoring ─────────────────────────────────────────────────
     health_threshold: int = 70
 
+    # ── Kafka Event-Driven Ingestion ────────────────────────────────────
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_topic: str = "product-updates"
+    kafka_group_id: str = "constructsync-group"
+
 
 @lru_cache
 def get_settings() -> ConstructSyncSettings:
