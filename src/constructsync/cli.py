@@ -64,6 +64,9 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         limit=getattr(args, "limit", 5000),
         health_threshold=health_threshold,
         force_sync=getattr(args, "force", False),
+        kafka_topic=getattr(args, "kafka_topic", None),
+        kafka_bootstrap_servers=getattr(args, "kafka_bootstrap_servers", None),
+        kafka_group_id=getattr(args, "kafka_group_id", None),
         settings=settings,
         batch_size=args.batch_size,
         concurrency=args.concurrency,
@@ -174,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest_parser.add_argument(
         "--source", "-s",
-        choices=["file", "bestbuy", "dummyjson"],
+        choices=["file", "bestbuy", "dummyjson", "kafka"],
         default="file",
         help="Ingestion source type (default: 'file')",
     )
@@ -218,6 +221,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Number of concurrent workers (default: from settings, typically 4)",
+    )
+    ingest_parser.add_argument(
+        "--kafka-topic",
+        type=str,
+        default=None,
+        help="Kafka topic to consume change events from (default: from settings)",
+    )
+    ingest_parser.add_argument(
+        "--kafka-bootstrap-servers",
+        type=str,
+        default=None,
+        help="Comma-separated Kafka bootstrap server addresses (default: from settings)",
+    )
+    ingest_parser.add_argument(
+        "--kafka-group-id",
+        type=str,
+        default=None,
+        help="Kafka consumer group ID (default: from settings)",
     )
     ingest_parser.add_argument(
         "--base-url",
