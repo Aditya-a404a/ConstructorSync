@@ -1,0 +1,1 @@
+{"timestamp": 1786818695.419849, "items_processed": {"success": 5, "failed": 0, "skipped": 0}, "items_sanitized": 0, "api_requests": {"200": 1}, "api_request_durations": [0.015469874999999966], "batch_size": 1000, "current_concurrency": 5, "health_scores": [100, 100, 100, 100, 100]}
