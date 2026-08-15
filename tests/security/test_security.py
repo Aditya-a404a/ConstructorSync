@@ -116,19 +116,22 @@ def test_owasp_xss_evasions():
 # ── 3. Hypothesis Property-Based Fuzz Testing ─────────────────────────
 
 # We run 10,000 cases to satisfy the fuzzing acceptance criteria
+# Strategy that generates either printable ASCII characters or one of our custom substrings
+chunk_strategy = st.characters(
+    whitelist_categories=("Lu", "Ll", "Nd", "P", "Zs", "Po"),
+    min_codepoint=32,
+    max_codepoint=127,
+) | st.sampled_from([
+    "<script>", "</script>", "onerror=", "javascript:", "<iframe>", "</iframe>", "<b>", "</b>", "<img src=x>"
+])
+
+# Generate a list of these chunks and join them
+input_str_strategy = st.lists(chunk_strategy, min_size=0, max_size=50).map("".join)
+
+
 @pytest.mark.hypothesis
 @settings(max_examples=10000, deadline=None)
-@given(
-    st.text(
-        alphabet=st.characters(
-            whitelist_categories=("Lu", "Ll", "Nd", "P", "Zs", "Po"),
-            min_codepoint=32,
-            max_codepoint=127,  # Printable ASCII
-        ) | st.sampled_from(["<script>", "</script>", "onerror=", "javascript:", "<iframe>", "</iframe>", "<b>", "</b>", "<img src=x>"]),
-        min_size=0,
-        max_size=300,
-    )
-)
+@given(input_str_strategy)
 def test_hypothesis_fuzz_properties(input_str: str):
     """Fuzz test sanitizer properties: safety, tag balance, and idempotency."""
     stage = SanitizerStage()
