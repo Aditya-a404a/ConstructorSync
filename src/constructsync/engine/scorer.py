@@ -32,13 +32,14 @@ class HealthScorer(PipelineStage):
         """Calculate the 0-100 health score for a single catalog item."""
         score = 100
 
-        # Retrieve fields
-        price = item.get("price")
-        description = item.get("description")
-        image_url = item.get("image_url")
-        category = item.get("category")
-        brand = item.get("brand")
-        metadata = item.get("metadata") or item.get("facets") or {}
+        # Retrieve fields (check both top-level and nested 'data' dictionary)
+        data = item.get("data", {}) if isinstance(item.get("data"), dict) else {}
+        price = item.get("price") if item.get("price") is not None else data.get("price")
+        description = item.get("description") if item.get("description") is not None else data.get("description")
+        image_url = item.get("image_url") if item.get("image_url") is not None else data.get("image_url")
+        category = item.get("category") if item.get("category") is not None else data.get("category")
+        brand = item.get("brand") if item.get("brand") is not None else data.get("brand")
+        metadata = item.get("metadata") or item.get("facets") or data.get("metadata") or data or {}
 
         # ── 1. Price Deduction (-40) ──────────────────────────────────────
         # Missing, None, empty string, or price <= 0
