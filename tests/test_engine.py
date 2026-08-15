@@ -394,6 +394,7 @@ class TestIngestionEngineIntegration:
         settings = ConstructSyncSettings(
             constructor_api_key="test_key",
             constructor_base_url="http://localhost:9999",
+            hash_store_database_path=str(csv_file.parent / "hashes.db"),
         )
         engine = IngestionEngine(
             file_path=csv_file,
@@ -444,6 +445,7 @@ class TestIngestionEngineIntegration:
         settings = ConstructSyncSettings(
             constructor_api_key="test_key",
             constructor_base_url="http://localhost:9999",
+            hash_store_database_path=str(csv_file.parent / "hashes.db"),
         )
         engine = IngestionEngine(
             file_path=csv_file,
@@ -487,6 +489,7 @@ class TestIngestionEngineIntegration:
         settings = ConstructSyncSettings(
             constructor_api_key="test_key",
             constructor_base_url="http://localhost:9999",
+            hash_store_database_path=str(large_csv_file.parent / "hashes.db"),
         )
         engine = IngestionEngine(
             file_path=large_csv_file,
@@ -527,6 +530,7 @@ class TestIngestionEngineIntegration:
         settings = ConstructSyncSettings(
             constructor_api_key="test_key",
             constructor_base_url="http://localhost:9999",
+            hash_store_database_path=str(csv_file.parent / "hashes.db"),
         )
         engine = IngestionEngine(
             file_path=csv_file,

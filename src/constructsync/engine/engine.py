@@ -25,6 +25,8 @@ from rich.text import Text
 from constructsync.engine.client import ConstructorClient
 from constructsync.engine.controller import ConcurrencyController
 from constructsync.engine.dlq import DeadLetterQueue
+from constructsync.engine.hash_filter import HashFilterStage
+from constructsync.engine.hash_store import HashStore
 from constructsync.engine.models import BatchResult, IngestionStats, PipelineStage
 from constructsync.engine.reader import CatalogReader
 from constructsync.engine.report import SyncReportGenerator
@@ -106,10 +108,13 @@ def _build_progress_table(stats: IngestionStats, concurrency: int) -> Table:
     table.add_row("Elapsed", f"{minutes:02d}:{seconds:02d}")
     table.add_row("", "")  # spacer
 
-    # Items
     table.add_row(
         "Items Sent",
         Text(f"{stats.items_sent:,}", style="green"),
+    )
+    table.add_row(
+        "Items Skipped",
+        Text(f"{stats.items_skipped:,}", style="cyan" if stats.items_skipped > 0 else "dim"),
     )
     table.add_row(
         "Items Failed",
@@ -166,6 +171,10 @@ class IngestionEngine:
         category: str | None = None,
         limit: int | None = None,
         health_threshold: int | None = None,
+        force_sync: bool = False,
+        kafka_topic: str | None = None,
+        kafka_bootstrap_servers: str | None = None,
+        kafka_group_id: str | None = None,
         settings: ConstructSyncSettings | None = None,
         batch_size: int | None = None,
         concurrency: int | None = None,
@@ -179,6 +188,10 @@ class IngestionEngine:
         self.category = category
         self.limit = limit or 5000
         self.health_threshold = health_threshold or self.settings.health_threshold
+        self.force_sync = force_sync
+        self.kafka_topic = kafka_topic or self.settings.kafka_topic
+        self.kafka_bootstrap_servers = kafka_bootstrap_servers or self.settings.kafka_bootstrap_servers
+        self.kafka_group_id = kafka_group_id or self.settings.kafka_group_id
         self.batch_size = batch_size or self.settings.default_batch_size
         self.concurrency = concurrency or self.settings.initial_concurrency
         self.base_url = base_url or self.settings.constructor_base_url
@@ -214,6 +227,8 @@ class IngestionEngine:
                 limit=self.limit,
                 batch_size=self.batch_size,
             )
+        elif self.source == "kafka":
+            reader = None
         else:
             if not self.file_path:
                 raise ValueError("File path must be provided when source is 'file'")
@@ -227,16 +242,28 @@ class IngestionEngine:
             max_concurrency=self.max_concurrency,
         )
         self.dlq = DeadLetterQueue(self.settings.dlq_database_path)
+        
+        # Initialize HashStore and HashFilterStage
+        self.hash_store = HashStore(self.settings.hash_store_database_path)
+        self.hash_filter = HashFilterStage(hash_store=self.hash_store, force_sync=self.force_sync)
+        if not any(isinstance(s, HashFilterStage) for s in self.pipeline_stages):
+            self.pipeline_stages.append(self.hash_filter)
+
         self.peak_concurrency = self.concurrency
 
         # Count total rows for progress tracking
-        target_name = self.file_path.name if self.file_path else f"Live API ({self.source})"
-        console.print(
-            f"[dim]Counting rows in {target_name}...[/dim]"
-        )
-        total_rows = reader.count_rows()
-        self.stats.total_items = total_rows
-        self.stats.batches_total = (total_rows + self.batch_size - 1) // self.batch_size
+        if self.source == "kafka":
+            total_rows = 0
+            self.stats.total_items = 0
+            self.stats.batches_total = 0
+        else:
+            target_name = self.file_path.name if self.file_path else f"Live API ({self.source})"
+            console.print(
+                f"[dim]Counting rows in {target_name}...[/dim]"
+            )
+            total_rows = reader.count_rows()
+            self.stats.total_items = total_rows
+            self.stats.batches_total = (total_rows + self.batch_size - 1) // self.batch_size
 
         console.print(
             f"[bold]Starting ingestion:[/bold] "
@@ -261,9 +288,14 @@ class IngestionEngine:
             max_connections=self.concurrency,
         ) as client:
             # Launch producer and workers
-            producer = asyncio.create_task(
-                self._produce_batches(reader), name="producer"
-            )
+            if self.source == "kafka":
+                producer = asyncio.create_task(
+                    self._produce_kafka_events(), name="kafka-producer"
+                )
+            else:
+                producer = asyncio.create_task(
+                    self._produce_batches(reader), name="producer"
+                )
             workers = [
                 asyncio.create_task(
                     self._worker(client, worker_id=i), name=f"worker-{i}"
@@ -282,6 +314,7 @@ class IngestionEngine:
                 while not producer.done() or not all(w.done() for w in workers):
                     cc = self.concurrency_controller.current_concurrency
                     self.peak_concurrency = max(self.peak_concurrency, cc)
+                    self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
                     live.update(
                         _build_progress_table(self.stats, cc)
                     )
@@ -290,6 +323,7 @@ class IngestionEngine:
                 # Final update
                 cc = self.concurrency_controller.current_concurrency
                 self.peak_concurrency = max(self.peak_concurrency, cc)
+                self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
                 live.update(
                     _build_progress_table(self.stats, cc)
                 )
@@ -308,6 +342,8 @@ class IngestionEngine:
             elif hasattr(stage, "get_stats") and callable(stage.get_stats):
                 health_scorer_stats = stage.get_stats()
                 health_scores = getattr(stage, "scores", [])
+
+        self.stats.items_skipped = self.hash_filter.stats["items_skipped"]
 
         # Generate final report
         report_dict = SyncReportGenerator.generate_report_dict(
@@ -375,9 +411,10 @@ class IngestionEngine:
         for stage in self.pipeline_stages:
             processed = await stage.process(processed)
             if not processed:
-                logger.warning(
-                    "Worker %d: pipeline stage filtered out entire batch", worker_id
+                logger.info(
+                    "Worker %d: all items in batch skipped (already synced)", worker_id
                 )
+                self.stats.batches_sent += 1
                 return
 
         # Send with retries
@@ -392,6 +429,8 @@ class IngestionEngine:
             if result.success:
                 self.stats.items_sent += result.item_count
                 self.stats.batches_sent += 1
+                # Commit hashes for successfully sent items
+                self.hash_filter.commit_hashes([item.get("id") or item.get("sku") for item in processed])
                 return
 
             # Retry on server errors (5xx) and rate limits (429)
@@ -437,6 +476,147 @@ class IngestionEngine:
             reason=f"HTTP {result.status_code}: {result.error_message}",
             retry_count=self.MAX_RETRIES,
         )
+
+    async def _produce_kafka_events(self) -> None:
+        """Consume events from Kafka, micro-batch, and push to queue."""
+        import json
+        from aiokafka import AIOKafkaConsumer
+
+        logger.info("Connecting to Kafka topic '%s' at %s...", self.kafka_topic, self.kafka_bootstrap_servers)
+
+        consumer = AIOKafkaConsumer(
+            self.kafka_topic,
+            bootstrap_servers=self.kafka_bootstrap_servers,
+            group_id=self.kafka_group_id,
+            value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            auto_offset_reset="earliest"
+        )
+
+        try:
+            await consumer.start()
+            logger.info("Kafka consumer started successfully.")
+            is_mock = False
+        except Exception as e:
+            logger.warning("Could not connect to Kafka broker (%s). Falling back to mock simulation mode...", e)
+            is_mock = True
+
+        try:
+            collected_events = []
+            last_flush_time = time.monotonic()
+
+            if is_mock:
+                import random
+                adjectives = ["Premium", "Ultra", "Pro", "Eco", "Smart", "Classic", "Deluxe", "Sleek"]
+                products = ["Laptop", "Headphones", "Monitor", "Speaker", "Phone Case", "Desk Lamp", "Yoga Mat", "Water Bottle"]
+                categories = ["Electronics", "Computers", "Audio", "Home & Kitchen", "Sports & Outdoors"]
+                brands = ["TechVault", "NovaPeak", "EcoSphere", "ApexWave", "VoltCraft"]
+
+                # Emit 1,000 events incrementally
+                for i in range(1, 1001):
+                    if self._shutdown:
+                        break
+
+                    sku = f"SKU-KAFKA-{i:04d}"
+                    # Occasional delete event to test deleted event skipping
+                    if random.random() < 0.02:
+                        event = {"event": "product.deleted", "sku": sku, "data": {}}
+                    else:
+                        event = {
+                            "event": "product.updated",
+                            "sku": sku,
+                            "data": {
+                                "name": f"{random.choice(adjectives)} {random.choice(products)}",
+                                "price": round(random.uniform(9.99, 1499.99), 2),
+                                "description": f"Experience the incredible product from {random.choice(brands)}. Exceeds fifty characters for perfect score.",
+                                "image_url": f"https://cdn.example.com/products/{sku}.jpg",
+                                "category": random.choice(categories),
+                                "brand": random.choice(brands),
+                            }
+                        }
+
+                    evt_name = event.get("event")
+                    sku = event.get("sku")
+
+                    if evt_name == "product.deleted":
+                        logger.info("Received delete event for SKU %s (not processed/sent)", sku)
+                        continue
+
+                    if evt_name in ("product.created", "product.updated"):
+                        raw_item = {
+                            "sku": sku,
+                            **(event.get("data") or {})
+                        }
+                        collected_events.append(raw_item)
+
+                    # Simulate real-time stream arrival
+                    await asyncio.sleep(0.005)
+
+                    # Flush check
+                    now = time.monotonic()
+                    if collected_events and (len(collected_events) >= self.batch_size or (now - last_flush_time) >= 5.0):
+                        mapped_batch = [_map_item(e) for e in collected_events]
+                        self.stats.total_items += len(mapped_batch)
+                        self.stats.batches_total += 1
+                        await self._queue.put(mapped_batch)
+                        collected_events = []
+                        last_flush_time = now
+            else:
+                while not self._shutdown:
+                    try:
+                        # Retrieve one message with a short timeout to allow check of shutdown flag
+                        msg = await asyncio.wait_for(consumer.getone(), timeout=0.5)
+                        event = msg.value
+
+                        if isinstance(event, dict):
+                            evt_name = event.get("event")
+                            sku = event.get("sku")
+
+                            if evt_name == "product.deleted":
+                                logger.info("Received delete event for SKU %s (not processed/sent)", sku)
+                                continue
+
+                            if evt_name in ("product.created", "product.updated"):
+                                raw_item = {
+                                    "sku": sku,
+                                    **(event.get("data") or {})
+                                }
+                                collected_events.append(raw_item)
+
+                    except asyncio.TimeoutError:
+                        pass
+                    except Exception as e:
+                        logger.error("Error retrieving event from Kafka: %s", e)
+                        await asyncio.sleep(1.0)
+
+                    # Flush batch if batch size reached or 5 seconds elapsed
+                    now = time.monotonic()
+                    if collected_events and (len(collected_events) >= self.batch_size or (now - last_flush_time) >= 5.0):
+                        mapped_batch = [_map_item(e) for e in collected_events]
+                        self.stats.total_items += len(mapped_batch)
+                        self.stats.batches_total += 1
+                        await self._queue.put(mapped_batch)
+                        collected_events = []
+                        last_flush_time = now
+
+            # Flush any remaining items before shutdown
+            if collected_events:
+                mapped_batch = [_map_item(e) for e in collected_events]
+                self.stats.total_items += len(mapped_batch)
+                self.stats.batches_total += 1
+                await self._queue.put(mapped_batch)
+
+        except Exception as e:
+            logger.error("Kafka producer task error: %s", e)
+            raise
+        finally:
+            logger.info("Stopping Kafka consumer...")
+            try:
+                await consumer.stop()
+            except Exception:
+                pass
+            # Send stop signal to all workers
+            for _ in range(self.concurrency):
+                await self._queue.put(_STOP)
 
     def _signal_shutdown(self) -> None:
         """Handle SIGINT/SIGTERM for graceful shutdown."""

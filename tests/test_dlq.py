@@ -152,6 +152,7 @@ async def test_dlq_engine_integration(tmp_path: Path):
         constructor_api_key="test_key",
         constructor_base_url="http://localhost:9999",
         dlq_database_path=str(tmp_path / "dlq_integ.db"),
+        hash_store_database_path=str(tmp_path / "hashes.db"),
     )
     engine = IngestionEngine(
         file_path=csv_file,
@@ -206,6 +207,7 @@ def test_cli_dlq_retry(tmp_path: Path):
         constructor_api_key="test_key",
         constructor_base_url="http://localhost:9999",
         dlq_database_path=str(db_file),
+        hash_store_database_path=str(tmp_path / "hashes.db"),
     )
     
     args = argparse.Namespace(

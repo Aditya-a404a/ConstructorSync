@@ -9,6 +9,8 @@ from constructsync.engine.controller import ConcurrencyController
 from constructsync.engine.dlq import DeadLetterQueue
 from constructsync.engine.dummyjson import DummyJSONReader
 from constructsync.engine.engine import IngestionEngine
+from constructsync.engine.hash_filter import HashFilterStage
+from constructsync.engine.hash_store import HashStore
 from constructsync.engine.models import BatchResult, IngestionStats, PipelineStage
 from constructsync.engine.reader import CatalogReader
 from constructsync.engine.sanitizer import SanitizerStage
@@ -20,6 +22,8 @@ __all__ = [
     "ConcurrencyController",
     "DeadLetterQueue",
     "DummyJSONReader",
+    "HashFilterStage",
+    "HashStore",
     "HealthScorer",
     "IngestionEngine",
     "BatchResult",
