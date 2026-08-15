@@ -11,7 +11,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 import polars as pl
 import pytest
-from hypothesis import Given, settings, given, strategies as st
+from hypothesis import settings, given, strategies as st
 
 from constructsync.engine.sanitizer import SanitizerStage
 
