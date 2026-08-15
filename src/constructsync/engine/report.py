@@ -35,6 +35,7 @@ class SyncReportGenerator:
         summary = {
             "total_items": stats.total_items,
             "items_sent": stats.items_sent,
+            "items_skipped": stats.items_skipped,
             "items_failed": stats.items_failed,
             "batches_total": stats.batches_total,
             "batches_sent": stats.batches_sent,
@@ -159,6 +160,8 @@ class SyncReportGenerator:
 
         table.add_row("Total Items", f"{summary['total_items']:,}")
         table.add_row("Items Sent", f"[green]{summary['items_sent']:,}[/green]")
+        if summary.get("items_skipped", 0) > 0:
+            table.add_row("Items Skipped", f"[cyan]{summary['items_skipped']:,}[/cyan]")
         table.add_row("Items Failed", f"[red]{summary['items_failed']:,}[/red]")
         table.add_row("Time Elapsed", f"{minutes:02d}:{seconds:02d}")
         table.add_row("Avg Throughput", f"{summary['avg_throughput_items_sec']:,.0f} items/sec")
@@ -210,3 +213,9 @@ class SyncReportGenerator:
                 bar_str = f"[cyan]{bar}[/cyan]" if bar_len > 0 else ""
                 console.print(f"      {bucket:<7} : {count:>5} | {bar_str}")
             console.print()
+
+        # Print overall status summary line
+        skipped_count = summary.get("items_skipped", 0)
+        sent_count = summary.get("items_sent", 0)
+        console.print(f"   [bold dim]Skipped {skipped_count:,} unchanged items. Synced {sent_count:,} modified items.[/bold dim]")
+        console.print()
