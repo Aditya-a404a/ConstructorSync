@@ -170,6 +170,7 @@ class IngestionEngine:
         source: str = "file",
         category: str | None = None,
         limit: int | None = None,
+        health_threshold: int | None = None,
         force_sync: bool = False,
         kafka_topic: str | None = None,
         kafka_bootstrap_servers: str | None = None,
