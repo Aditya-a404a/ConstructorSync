@@ -24,8 +24,10 @@ from rich.text import Text
 
 from constructsync.engine.client import ConstructorClient
 from constructsync.engine.controller import ConcurrencyController
+from constructsync.engine.dlq import DeadLetterQueue
 from constructsync.engine.models import BatchResult, IngestionStats, PipelineStage
 from constructsync.engine.reader import CatalogReader
+from constructsync.engine.report import SyncReportGenerator
 from constructsync.settings import ConstructSyncSettings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -184,6 +186,8 @@ class IngestionEngine:
         # Python 3.9 "attached to a different loop" errors.
         self._queue: asyncio.Queue[list[dict] | None] | None = None
         self.concurrency_controller: ConcurrencyController | None = None
+        self.dlq: DeadLetterQueue | None = None
+        self.peak_concurrency = self.concurrency
 
     async def run(self) -> IngestionStats:
         """
@@ -202,6 +206,8 @@ class IngestionEngine:
             min_concurrency=self.min_concurrency,
             max_concurrency=self.max_concurrency,
         )
+        self.dlq = DeadLetterQueue(self.settings.dlq_database_path)
+        self.peak_concurrency = self.concurrency
 
         # Count total rows for progress tracking
         console.print(
@@ -253,22 +259,43 @@ class IngestionEngine:
             ) as live:
                 # Update progress table while workers are running
                 while not producer.done() or not all(w.done() for w in workers):
+                    cc = self.concurrency_controller.current_concurrency
+                    self.peak_concurrency = max(self.peak_concurrency, cc)
                     live.update(
-                        _build_progress_table(self.stats, self.concurrency_controller.current_concurrency)
+                        _build_progress_table(self.stats, cc)
                     )
                     await asyncio.sleep(0.25)
 
                 # Final update
+                cc = self.concurrency_controller.current_concurrency
+                self.peak_concurrency = max(self.peak_concurrency, cc)
                 live.update(
-                    _build_progress_table(self.stats, self.concurrency_controller.current_concurrency)
+                    _build_progress_table(self.stats, cc)
                 )
 
             # Collect any exceptions
             await producer
             await asyncio.gather(*workers, return_exceptions=True)
 
-        # Print summary
-        self._print_summary(console)
+        # Retrieve SanitizerStage stats if present
+        sanitizer_stats = None
+        for stage in self.pipeline_stages:
+            if hasattr(stage, "stats") and isinstance(stage.stats, dict) and "items_sanitized" in stage.stats:
+                sanitizer_stats = stage.stats
+                break
+
+        # Generate final report
+        report_dict = SyncReportGenerator.generate_report_dict(
+            stats=self.stats,
+            sanitizer_stats=sanitizer_stats,
+            peak_concurrency=self.peak_concurrency,
+        )
+        report_file = SyncReportGenerator.write_json_report(report_dict)
+        console.print(f"[dim]Sync report written to {report_file}[/dim]")
+
+        # Print report in console
+        SyncReportGenerator.print_console_report(report_dict, console=console)
+
         return self.stats
 
     async def _produce_batches(self, reader: CatalogReader) -> None:
@@ -377,53 +404,15 @@ class IngestionEngine:
         self.stats.items_failed += result.item_count
         self.stats.batches_failed += 1
 
+        # Save failed batch items into Dead-Letter Queue
+        self.dlq.insert_failed_items(
+            items=processed,
+            reason=f"HTTP {result.status_code}: {result.error_message}",
+            retry_count=self.MAX_RETRIES,
+        )
+
     def _signal_shutdown(self) -> None:
         """Handle SIGINT/SIGTERM for graceful shutdown."""
         if not self._shutdown:
             logger.info("Shutdown signal received — draining queue...")
             self._shutdown = True
-
-    def _print_summary(self, console: Console) -> None:
-        """Print a final summary table after ingestion completes."""
-        elapsed = self.stats.elapsed_seconds
-        minutes, seconds = divmod(int(elapsed), 60)
-
-        console.print()
-        console.rule("[bold green]Ingestion Complete[/bold green]")
-
-        summary = Table(show_header=False, border_style="green", padding=(0, 2))
-        summary.add_column("Metric", style="bold")
-        summary.add_column("Value", justify="right")
-
-        summary.add_row("Total Items", f"{self.stats.total_items:,}")
-        summary.add_row("Items Sent", f"[green]{self.stats.items_sent:,}[/green]")
-        summary.add_row("Items Failed", f"[red]{self.stats.items_failed:,}[/red]")
-        summary.add_row("Time Elapsed", f"{minutes:02d}:{seconds:02d}")
-        summary.add_row(
-            "Avg Throughput", f"{self.stats.items_per_second:,.0f} items/sec"
-        )
-        summary.add_row("API Calls", f"{self.stats.api_calls:,}")
-        summary.add_row("Retries", f"{self.stats.retries:,}")
-
-        # Check for SanitizerStage statistics
-        sanitizer_stats = None
-        for stage in self.pipeline_stages:
-            if hasattr(stage, "stats") and isinstance(stage.stats, dict) and "items_sanitized" in stage.stats:
-                sanitizer_stats = stage.stats
-                break
-
-        if sanitizer_stats:
-            summary.add_row("Items Sanitized", f"[yellow]{sanitizer_stats['items_sanitized']:,}[/yellow]")
-            summary.add_row("Validation Failures", f"[red]{sanitizer_stats['items_failed_validation']:,}[/red]")
-            summary.add_row("Tags Stripped", f"{sanitizer_stats['tags_stripped']:,}")
-            summary.add_row("Entities Encoded", f"{sanitizer_stats['entities_encoded']:,}")
-            summary.add_row("Double Entities Norm", f"{sanitizer_stats['double_encoded_normalized']:,}")
-
-        if self.stats.status_codes:
-            codes_str = ", ".join(
-                f"{code}: {count}" for code, count in sorted(self.stats.status_codes.items())
-            )
-            summary.add_row("Status Codes", codes_str)
-
-        console.print(summary)
-        console.print()

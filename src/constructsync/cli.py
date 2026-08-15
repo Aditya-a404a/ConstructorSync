@@ -59,6 +59,80 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_dlq_list(args: argparse.Namespace) -> None:
+    """List items currently in the Dead-Letter Queue."""
+    from constructsync.engine.dlq import DeadLetterQueue
+    from constructsync.settings import get_settings
+    from rich.console import Console
+    from rich.table import Table
+
+    settings = get_settings()
+    dlq = DeadLetterQueue(settings.dlq_database_path)
+    records = dlq.list_items(reason=args.reason, sku=args.sku, limit=args.limit)
+
+    console = Console()
+    if not records:
+        console.print("[yellow]No items found in the Dead-Letter Queue.[/yellow]")
+        return
+
+    table = Table(title="💀 Dead-Letter Queue Items", border_style="red")
+    table.add_column("DB ID", style="dim", justify="right")
+    table.add_column("SKU/ID", style="bold")
+    table.add_column("Reason", style="red")
+    table.add_column("Timestamp", style="cyan")
+    table.add_column("Retries", justify="center")
+
+    for r in records:
+        table.add_row(
+            str(r["id"]),
+            r["sku"],
+            r["reason"] or "N/A",
+            r["timestamp"],
+            str(r["retry_count"]),
+        )
+
+    console.print(table)
+
+
+def cmd_dlq_retry(args: argparse.Namespace) -> None:
+    """Reprocess and retry failed items stored in the DLQ."""
+    import asyncio
+    from constructsync.engine.client import ConstructorClient
+    from constructsync.engine.dlq import DeadLetterQueue
+    from constructsync.settings import get_settings
+
+    settings = get_settings()
+    dlq = DeadLetterQueue(settings.dlq_database_path)
+    records = dlq.list_items(limit=10000)
+
+    if not records:
+        print("No items found in the Dead-Letter Queue to retry.")
+        return
+
+    print(f"Found {len(records)} items in DLQ. Retrying...")
+
+    async def run_retry():
+        base_url = args.base_url or settings.constructor_base_url
+        api_key = args.api_key or settings.constructor_api_key
+        
+        async with ConstructorClient(base_url=base_url, api_key=api_key) as client:
+            # Batch items up to 1000
+            for i in range(0, len(records), 1000):
+                chunk = records[i : i + 1000]
+                payloads = [r["sanitized_data"] for r in chunk]
+                
+                result = await client.send_batch(payloads)
+                if result.success:
+                    # Remove successfully processed records from DLQ
+                    db_ids = [r["id"] for r in chunk]
+                    dlq.delete_items(db_ids)
+                    print(f"Successfully retried and cleared {len(db_ids)} items.")
+                else:
+                    print(f"Failed to retry batch of {len(chunk)} items: {result.error_message}")
+
+    asyncio.run(run_retry())
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser."""
     parser = argparse.ArgumentParser(
@@ -107,6 +181,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable debug logging",
     )
     ingest_parser.set_defaults(func=cmd_ingest)
+
+    # ── dlq-list ───────────────────────────────────────────────────────
+    dlq_list_parser = subparsers.add_parser(
+        "dlq-list",
+        help="List failed items currently stored in the DLQ",
+    )
+    dlq_list_parser.add_argument(
+        "--reason",
+        type=str,
+        default=None,
+        help="Filter items by failure reason",
+    )
+    dlq_list_parser.add_argument(
+        "--sku",
+        type=str,
+        default=None,
+        help="Filter items by specific SKU/ID",
+    )
+    dlq_list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum number of items to display (default: 100)",
+    )
+    dlq_list_parser.set_defaults(func=cmd_dlq_list)
+
+    # ── dlq-retry ──────────────────────────────────────────────────────
+    dlq_retry_parser = subparsers.add_parser(
+        "dlq-retry",
+        help="Reprocess and retry failed items in the DLQ",
+    )
+    dlq_retry_parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Constructor API base URL (default: from .env)",
+    )
+    dlq_retry_parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="Constructor API key (default: from .env)",
+    )
+    dlq_retry_parser.set_defaults(func=cmd_dlq_retry)
 
     return parser
 
