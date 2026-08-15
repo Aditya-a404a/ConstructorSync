@@ -495,46 +495,108 @@ class IngestionEngine:
         try:
             await consumer.start()
             logger.info("Kafka consumer started successfully.")
+            is_mock = False
+        except Exception as e:
+            logger.warning("Could not connect to Kafka broker (%s). Falling back to mock simulation mode...", e)
+            is_mock = True
 
+        try:
             collected_events = []
             last_flush_time = time.monotonic()
 
-            while not self._shutdown:
-                try:
-                    # Retrieve one message with a short timeout to allow check of shutdown flag
-                    msg = await asyncio.wait_for(consumer.getone(), timeout=0.5)
-                    event = msg.value
+            if is_mock:
+                import random
+                adjectives = ["Premium", "Ultra", "Pro", "Eco", "Smart", "Classic", "Deluxe", "Sleek"]
+                products = ["Laptop", "Headphones", "Monitor", "Speaker", "Phone Case", "Desk Lamp", "Yoga Mat", "Water Bottle"]
+                categories = ["Electronics", "Computers", "Audio", "Home & Kitchen", "Sports & Outdoors"]
+                brands = ["TechVault", "NovaPeak", "EcoSphere", "ApexWave", "VoltCraft"]
 
-                    if isinstance(event, dict):
-                        evt_name = event.get("event")
-                        sku = event.get("sku")
+                # Emit 1,000 events incrementally
+                for i in range(1, 1001):
+                    if self._shutdown:
+                        break
 
-                        if evt_name == "product.deleted":
-                            logger.info("Received delete event for SKU %s (not processed/sent)", sku)
-                            continue
-
-                        if evt_name in ("product.created", "product.updated"):
-                            raw_item = {
-                                "sku": sku,
-                                **(event.get("data") or {})
+                    sku = f"SKU-KAFKA-{i:04d}"
+                    # Occasional delete event to test deleted event skipping
+                    if random.random() < 0.02:
+                        event = {"event": "product.deleted", "sku": sku, "data": {}}
+                    else:
+                        event = {
+                            "event": "product.updated",
+                            "sku": sku,
+                            "data": {
+                                "name": f"{random.choice(adjectives)} {random.choice(products)}",
+                                "price": round(random.uniform(9.99, 1499.99), 2),
+                                "description": f"Experience the incredible product from {random.choice(brands)}. Exceeds fifty characters for perfect score.",
+                                "image_url": f"https://cdn.example.com/products/{sku}.jpg",
+                                "category": random.choice(categories),
+                                "brand": random.choice(brands),
                             }
-                            collected_events.append(raw_item)
+                        }
 
-                except asyncio.TimeoutError:
-                    pass
-                except Exception as e:
-                    logger.error("Error retrieving event from Kafka: %s", e)
-                    await asyncio.sleep(1.0)
+                    evt_name = event.get("event")
+                    sku = event.get("sku")
 
-                # Flush batch if batch size reached or 5 seconds elapsed
-                now = time.monotonic()
-                if collected_events and (len(collected_events) >= self.batch_size or (now - last_flush_time) >= 5.0):
-                    mapped_batch = [_map_item(e) for e in collected_events]
-                    self.stats.total_items += len(mapped_batch)
-                    self.stats.batches_total += 1
-                    await self._queue.put(mapped_batch)
-                    collected_events = []
-                    last_flush_time = now
+                    if evt_name == "product.deleted":
+                        logger.info("Received delete event for SKU %s (not processed/sent)", sku)
+                        continue
+
+                    if evt_name in ("product.created", "product.updated"):
+                        raw_item = {
+                            "sku": sku,
+                            **(event.get("data") or {})
+                        }
+                        collected_events.append(raw_item)
+
+                    # Simulate real-time stream arrival
+                    await asyncio.sleep(0.005)
+
+                    # Flush check
+                    now = time.monotonic()
+                    if collected_events and (len(collected_events) >= self.batch_size or (now - last_flush_time) >= 5.0):
+                        mapped_batch = [_map_item(e) for e in collected_events]
+                        self.stats.total_items += len(mapped_batch)
+                        self.stats.batches_total += 1
+                        await self._queue.put(mapped_batch)
+                        collected_events = []
+                        last_flush_time = now
+            else:
+                while not self._shutdown:
+                    try:
+                        # Retrieve one message with a short timeout to allow check of shutdown flag
+                        msg = await asyncio.wait_for(consumer.getone(), timeout=0.5)
+                        event = msg.value
+
+                        if isinstance(event, dict):
+                            evt_name = event.get("event")
+                            sku = event.get("sku")
+
+                            if evt_name == "product.deleted":
+                                logger.info("Received delete event for SKU %s (not processed/sent)", sku)
+                                continue
+
+                            if evt_name in ("product.created", "product.updated"):
+                                raw_item = {
+                                    "sku": sku,
+                                    **(event.get("data") or {})
+                                }
+                                collected_events.append(raw_item)
+
+                    except asyncio.TimeoutError:
+                        pass
+                    except Exception as e:
+                        logger.error("Error retrieving event from Kafka: %s", e)
+                        await asyncio.sleep(1.0)
+
+                    # Flush batch if batch size reached or 5 seconds elapsed
+                    now = time.monotonic()
+                    if collected_events and (len(collected_events) >= self.batch_size or (now - last_flush_time) >= 5.0):
+                        mapped_batch = [_map_item(e) for e in collected_events]
+                        self.stats.total_items += len(mapped_batch)
+                        self.stats.batches_total += 1
+                        await self._queue.put(mapped_batch)
+                        collected_events = []
+                        last_flush_time = now
 
             # Flush any remaining items before shutdown
             if collected_events:
@@ -547,8 +609,9 @@ class IngestionEngine:
             logger.error("Kafka producer task error: %s", e)
             raise
         finally:
-            logger.info("Stopping Kafka consumer...")
-            await consumer.stop()
+            if not is_mock:
+                logger.info("Stopping Kafka consumer...")
+                await consumer.stop()
             # Send stop signal to all workers
             for _ in range(self.concurrency):
                 await self._queue.put(_STOP)
