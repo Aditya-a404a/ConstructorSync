@@ -39,6 +39,7 @@ class IngestionStats:
     retries: int = 0
     api_calls: int = 0
     status_codes: dict[int, int] = field(default_factory=dict)
+    latencies: list[float] = field(default_factory=list)
     start_time: float = field(default_factory=time.monotonic)
 
     @property
