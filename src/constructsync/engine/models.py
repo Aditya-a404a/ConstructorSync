@@ -32,6 +32,7 @@ class IngestionStats:
     total_items: int = 0
     items_sent: int = 0
     items_failed: int = 0
+    items_skipped: int = 0
     batches_total: int = 0
     batches_sent: int = 0
     batches_failed: int = 0
