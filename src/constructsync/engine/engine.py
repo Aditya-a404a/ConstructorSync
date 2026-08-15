@@ -609,9 +609,11 @@ class IngestionEngine:
             logger.error("Kafka producer task error: %s", e)
             raise
         finally:
-            if not is_mock:
-                logger.info("Stopping Kafka consumer...")
+            logger.info("Stopping Kafka consumer...")
+            try:
                 await consumer.stop()
+            except Exception:
+                pass
             # Send stop signal to all workers
             for _ in range(self.concurrency):
                 await self._queue.put(_STOP)
