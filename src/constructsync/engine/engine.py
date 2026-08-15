@@ -161,7 +161,10 @@ class IngestionEngine:
 
     def __init__(
         self,
-        file_path: str | Path,
+        file_path: str | Path | None = None,
+        source: str = "file",
+        category: str | None = None,
+        limit: int | None = None,
         settings: ConstructSyncSettings | None = None,
         batch_size: int | None = None,
         concurrency: int | None = None,
@@ -170,7 +173,10 @@ class IngestionEngine:
         pipeline_stages: list[PipelineStage] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.file_path = Path(file_path)
+        self.file_path = Path(file_path) if file_path is not None else None
+        self.source = source.lower()
+        self.category = category
+        self.limit = limit or 5000
         self.batch_size = batch_size or self.settings.default_batch_size
         self.concurrency = concurrency or self.settings.initial_concurrency
         self.base_url = base_url or self.settings.constructor_base_url
@@ -197,7 +203,19 @@ class IngestionEngine:
             IngestionStats with final counters.
         """
         console = Console()
-        reader = CatalogReader(self.file_path, batch_size=self.batch_size)
+
+        # Select reader based on source
+        if self.source in ("bestbuy", "dummyjson"):
+            from constructsync.engine.dummyjson import DummyJSONReader
+            reader = DummyJSONReader(
+                category=self.category,
+                limit=self.limit,
+                batch_size=self.batch_size,
+            )
+        else:
+            if not self.file_path:
+                raise ValueError("File path must be provided when source is 'file'")
+            reader = CatalogReader(self.file_path, batch_size=self.batch_size)
 
         # Create asyncio primitives in the running loop (Python 3.9 compat)
         self._queue = asyncio.Queue(maxsize=self.concurrency * 2)
@@ -210,8 +228,9 @@ class IngestionEngine:
         self.peak_concurrency = self.concurrency
 
         # Count total rows for progress tracking
+        target_name = self.file_path.name if self.file_path else f"Live API ({self.source})"
         console.print(
-            f"[dim]Counting rows in {self.file_path.name}...[/dim]"
+            f"[dim]Counting rows in {target_name}...[/dim]"
         )
         total_rows = reader.count_rows()
         self.stats.total_items = total_rows
