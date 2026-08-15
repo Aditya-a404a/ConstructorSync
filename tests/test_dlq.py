@@ -185,8 +185,7 @@ async def test_dlq_engine_integration(tmp_path: Path):
     assert dlq_items[0]["reason"] == "HTTP 500: Fatal server error"
 
 
-@pytest.mark.asyncio
-async def test_cli_dlq_retry(tmp_path: Path):
+def test_cli_dlq_retry(tmp_path: Path):
     """Verify that reprocessing failed DLQ items sends them to Constructor and deletes them."""
     import argparse
     from constructsync.cli import cmd_dlq_retry
