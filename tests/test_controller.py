@@ -157,6 +157,7 @@ async def test_aimd_engine_chaos_mode_integration(tmp_path: Path):
         constructor_base_url="http://localhost:9999",
         min_concurrency=2,
         max_concurrency=8,
+        hash_store_database_path=str(csv_file.parent / "hashes.db"),
     )
     engine = IngestionEngine(
         file_path=csv_file,
