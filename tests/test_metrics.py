@@ -40,16 +40,16 @@ def test_metrics_endpoint_exposition_format(tmp_path: Path):
     metrics_file = Path("data/metrics.json")
     
     # We mock metrics file exists and mtime check to simulate active ingestion run
+    from unittest.mock import mock_open
     with patch.object(Path, "exists", return_value=True), \
          patch.object(Path, "stat") as mock_stat, \
-         patch("builtins.open", patch("builtins.open", return_value=None)) as mock_open:
+         patch("builtins.open", mock_open(read_data=json.dumps(metrics_data))):
         
         # Mock mtime to be current time
         import time
         mock_stat.return_value.st_mtime = time.time()
         
-        # Mock open().read() to return our JSON dump
-        mock_open.return_value.__enter__.return_value.read.return_value = json.dumps(metrics_data)
+
 
         # Mock DeadLetterQueue to return 3 failed items
         with patch("constructsync.main.DeadLetterQueue") as mock_dlq_cls:
