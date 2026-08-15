@@ -29,6 +29,12 @@ def _setup_logging(debug: bool = False) -> None:
 
 def cmd_ingest(args: argparse.Namespace) -> None:
     """Execute the ingestion command."""
+    # Validate arguments based on source
+    source = getattr(args, "source", "file").lower()
+    if source == "file" and not getattr(args, "file", None):
+        print("Error: --file / -f is required when --source is 'file'")
+        sys.exit(1)
+
     from constructsync.engine.engine import IngestionEngine
     from constructsync.engine.sanitizer import SanitizerStage
     from constructsync.settings import get_settings
@@ -42,12 +48,20 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         url_fields=settings.sanitize_url_fields,
     )
 
+    # Determine base-url based on target argument
+    base_url = args.base_url
+    if getattr(args, "target", None) == "constructor-mock":
+        base_url = "http://127.0.0.1:8001"
+
     engine = IngestionEngine(
-        file_path=args.file,
+        file_path=getattr(args, "file", None),
+        source=source,
+        category=getattr(args, "category", None),
+        limit=getattr(args, "limit", 5000),
         settings=settings,
         batch_size=args.batch_size,
         concurrency=args.concurrency,
-        base_url=args.base_url or settings.constructor_base_url,
+        base_url=base_url or settings.constructor_base_url,
         api_key=args.api_key or settings.constructor_api_key,
         pipeline_stages=[sanitizer],
     )
@@ -144,12 +158,37 @@ def build_parser() -> argparse.ArgumentParser:
     # ── ingest ─────────────────────────────────────────────────────────
     ingest_parser = subparsers.add_parser(
         "ingest",
-        help="Ingest a catalog file into the Constructor API",
+        help="Ingest a catalog file or live API data into Constructor",
     )
     ingest_parser.add_argument(
         "--file", "-f",
-        required=True,
+        required=False,
+        default=None,
         help="Path to the catalog file (CSV or JSONL)",
+    )
+    ingest_parser.add_argument(
+        "--source", "-s",
+        choices=["file", "bestbuy", "dummyjson"],
+        default="file",
+        help="Ingestion source type (default: 'file')",
+    )
+    ingest_parser.add_argument(
+        "--category",
+        type=str,
+        default=None,
+        help="Category filter for live API ingestion (e.g. 'laptops')",
+    )
+    ingest_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5000,
+        help="Total item limit for live API ingestion (default: 5000)",
+    )
+    ingest_parser.add_argument(
+        "--target",
+        type=str,
+        default=None,
+        help="Inbound Target (e.g. 'constructor-mock')",
     )
     ingest_parser.add_argument(
         "--batch-size", "-b",
