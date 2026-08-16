@@ -397,39 +397,77 @@ ConstructSync features a complete, non-blocking HTTP REST API allowing control a
 
 ## Setup & Quick Start
 
+ConstructSync requires two main layers to run: the Python backend services and the Next.js frontend explorer.
+
 ### Option A: Local Execution (Recommended)
 
-1. **Activate Virtual Environment:**
+#### 1. Spin Up Backend Services
+Open a terminal window in the `ConstructorSync` root directory:
+
 ```bash
+# Create and activate virtual environment
+python3 -m venv .venv
 source .venv/bin/activate
+
+# Install package and dependencies in editable mode
 pip install -e .
+
+# Copy environment variables configuration
+cp .env.example .env
+
+# [Terminal 1] Start the high-fidelity Mock API Target (Port 8001)
+constructsync-mock  # Alias for: uvicorn constructsync.mock_api:app --port 8001
+
+# [Terminal 2] Start the main ConstructSync Ingestion Middleware (Port 8000)
+uvicorn constructsync.main:app --port 8000 --reload
 ```
 
-2. **Start the Mock API Server (Port 8001):**
+#### 2. Spin Up Frontend Explorer
+Open a terminal window in the sibling `ConstructorSyncFrontend` directory:
+
 ```bash
-constructsync-mock  # or: python -m uvicorn constructsync.mock_api:app --port 8001
+# Navigate to frontend folder
+cd ../ConstructorSyncFrontend
+
+# Install package dependencies
+npm install
+
+# Start the Next.js development server (Port 3000)
+npm run dev
 ```
 
-3. **Start the Ingestion Pipeline API Server (Port 8000):**
+Navigate to `http://localhost:3000` to interact with the dashboard, view metrics, and test API endpoints.
+
+---
+
+### Option B: Docker Compose Setup
+
+To spin up the backend middleware, mock API, ZooKeeper, and Kafka in a single command, run from the `ConstructorSync` root:
 ```bash
-python -m uvicorn constructsync.main:app --port 8000 --reload
+docker-compose up --build
 ```
+*(The Next.js frontend can then be started locally on port 3000 as shown in step 2 above).*
 
-4. **Trigger Ingestion via HTTP:**
+---
+
+### Option C: Verifying the Ingestion Flow
+Once backend and frontend services are online, you can trigger catalog ingestion in two ways:
+
+**1. Via REST API (Frontend explorer trigger):**
 ```bash
 curl -X POST -H "Content-Type: application/json" \
   -d '{"source":"file", "file_path":"data/processed/demo_products_augmented.csv", "target":"constructor-mock"}' \
   http://127.0.0.1:8000/ingest
 ```
 
-### Option B: Docker Compose Setup
-
-Spin up the entire stack (FastAPI server, mock Constructor API, ZooKeeper, and Kafka) with one command:
+**2. Via CLI (Command Line trigger):**
 ```bash
-docker-compose up --build
+constructsync ingest \
+  --source file \
+  --file data/processed/demo_products_augmented.csv \
+  --target constructor-mock \
+  --concurrency 6
 ```
-
----
 
 ## Design Decisions
 
@@ -450,19 +488,6 @@ Ingested **10,006 products** into the mock API (with chaos mode rate limiting en
 | **Fixed Concurrency (16 workers)** | 22.8s (Timeout) | 16 | 47 | 438 items/sec |
 | **AIMD Concurrency (Adaptive)** | **2.1s** | **15** | **0** | **4,601 items/sec** |
 | **Delta Sync (Content Hashing)** | **0.1s** | **1** (skipped) | **0** | **10,006 items/sec (equivalent)** |
-
----
-
-## Loom Demo Script (2-3 Minutes)
-
-Prepare a recording covering these points:
-1. **Introduction:** Introduce ConstructSync as a high-concurrency security middleware for headless e-commerce search.
-2. **Setup:** Run local health checking `curl localhost:8000/health`. Show that both the pipeline server (8000) and mock API (8001) are active.
-3. **Ingest Clean Run:** Send the POST `/ingest` request. Show it running in the background.
-4. **Job Monitoring:** Query `GET /ingest/jobs/{job_id}` and show the completed sync report containing average health scores and sanitization statistics.
-5. **Delta Sync Run:** Trigger the same request again. Show it completes in under 1 second, skipping 10,005 unchanged records thanks to SHA-256 content hashing.
-6. **XSS Sanitization & DLQ:** Explain how compromise attempts are deflected by the Bleach sanitizer, and how items missing mandatory prices are safely isolated in the Dead-Letter Queue.
-7. **Metrics:** Curl `localhost:8000/metrics` to show live Prometheus metrics.
 
 ---
 
